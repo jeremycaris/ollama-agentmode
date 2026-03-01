@@ -6,13 +6,37 @@ Enables local Ollama models in VS Code Copilot Chat **Agent Mode** with full too
 
 **Verified working:** `qwen3.5:35b-a3b-q4_K_M` — file creation and multi-step agent tasks confirmed.
 
-## Install
+## Install (Any Machine)
 
+### Prerequisites
+- **VS Code** installed
+- **Ollama** installed and running — `brew install ollama` or [ollama.com](https://ollama.com)
+- A tool-capable model pulled, e.g. `ollama pull qwen3:8b`
+- **git** available in terminal
+
+### Steps
+
+**1. Clone the repo**
 ```bash
-code --install-extension /path/to/ollama-agentmode-enabler --force
+git clone https://github.com/jeremycaris/ollama-agentmode.git
+cd ollama-agentmode
 ```
 
-Then **fully restart VS Code** (Cmd+Q and reopen).
+**2. Install the extension**
+```bash
+chmod +x install.sh && ./install.sh
+```
+
+**3. Restart VS Code fully** (Cmd+Q then reopen)
+
+**4. Start Ollama** (if not already running)
+```bash
+# Standard:
+ollama serve
+
+# With keep-alive to avoid cold-start delays:
+OLLAMA_KEEP_ALIVE=-1 ollama serve
+```
 
 ## Verify
 
@@ -63,6 +87,21 @@ curl http://localhost:11434/api/tags   # confirm Ollama is running
 ```bash
 code --list-extensions | grep ollama
 # Help → Toggle Developer Tools → Console for errors
+```
+
+---
+
+## Keeping Up-to-Date
+
+When you make changes on one machine, sync to others:
+
+```bash
+# After making changes — commit and push:
+git add -A && git commit -m "your message" && git push
+
+# On any other machine — pull and reinstall:
+git pull && ./install.sh
+# Then restart VS Code
 ```
 
 ---
