@@ -53,8 +53,12 @@ User prompt
 
 ## Installation
 
+Prerequisite: Node.js and npm must be installed (used to build/package the extension).
+
+From the repository root:
+
 ```bash
-code --install-extension /path/to/ollama-agentmode-enabler --force
+./install.sh
 ```
 
 Then **restart VS Code** completely (Cmd+Q and reopen).

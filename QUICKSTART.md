@@ -23,8 +23,9 @@ cd ollama-agentmode
 ```
 
 **2. Install the extension**
+Prerequisite: Node.js and npm must be installed (used to build/package the extension).
 ```bash
-chmod +x install.sh && ./install.sh
+./install.sh
 ```
 
 **3. Restart VS Code fully** (Cmd+Q then reopen)

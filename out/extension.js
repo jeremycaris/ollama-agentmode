@@ -131,20 +131,23 @@ function convertMessagesToOllama(messages) {
                 else if (part instanceof vscode.LanguageModelToolCallPart) {
                     // Assistant is calling a tool
                     toolCalls.push({
-                        function: { name: part.name, arguments: part.input }
+                        function: {
+                            name: part.name,
+                            arguments: part.input
+                        }
                     });
                 }
                 else if (part instanceof vscode.LanguageModelToolResultPart) {
                     // Tool result — becomes a 'tool' role message in Ollama
                     let resultContent = '';
                     if (Array.isArray(part.content)) {
-                        for (const rp of part.content) {
-                            if (rp instanceof vscode.LanguageModelTextPart) {
-                                resultContent += rp.value;
+                        for (const resultPart of part.content) {
+                            if (resultPart instanceof vscode.LanguageModelTextPart) {
+                                resultContent += resultPart.value;
                             }
                             else {
                                 try {
-                                    resultContent += JSON.stringify(rp);
+                                    resultContent += JSON.stringify(resultPart);
                                 }
                                 catch {
                                     // ignore non-serializable tool result part
@@ -179,27 +182,6 @@ function convertToolsToOllama(tools) {
         }
     }));
 }
-function parseXmlToolCalls(text) {
-    const toolCalls = [];
-    const toolPattern = /<(\w+)>([\s\S]*?)<\/\1>/g;
-    const skipTags = new Set(['p','b','i','em','strong','code','pre','ul','ol','li','h1','h2','h3','h4','table','tr','td','th']);
-    let match;
-    while ((match = toolPattern.exec(text)) !== null) {
-        const toolName = match[1];
-        if (skipTags.has(toolName)) { continue; }
-        const body = match[2];
-        const args = {};
-        const argPattern = /<(\w+)>([\s\S]*?)<\/\1>/g;
-        let argMatch;
-        while ((argMatch = argPattern.exec(body)) !== null) {
-            args[argMatch[1]] = argMatch[2].trim();
-        }
-        if (Object.keys(args).length > 0) {
-            toolCalls.push({ function: { name: toolName, arguments: args } });
-        }
-    }
-    return toolCalls.length > 0 ? toolCalls : null;
-}
 function parseToolArguments(raw) {
     if (raw && typeof raw === 'object') {
         return raw;
@@ -221,6 +203,32 @@ function parseToolArguments(raw) {
         }
     }
     return {};
+}
+function parseXmlToolCalls(text) {
+    // Fallback: detect XML-style tool invocations that some models emit in content
+    // Pattern: <tool_name><param>value</param>...</tool_name>
+    const toolCalls = [];
+    const toolPattern = /<(\w+)>([\s\S]*?)<\/\1>/g;
+    let match;
+    while ((match = toolPattern.exec(text)) !== null) {
+        const toolName = match[1];
+        const body = match[2];
+        // Skip obvious non-tool tags
+        if (['p', 'b', 'i', 'em', 'strong', 'code', 'pre', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'table', 'tr', 'td', 'th'].includes(toolName)) {
+            continue;
+        }
+        // Parse child elements as arguments
+        const args = {};
+        const argPattern = /<(\w+)>([\s\S]*?)<\/\1>/g;
+        let argMatch;
+        while ((argMatch = argPattern.exec(body)) !== null) {
+            args[argMatch[1]] = argMatch[2].trim();
+        }
+        if (Object.keys(args).length > 0) {
+            toolCalls.push({ function: { name: toolName, arguments: args } });
+        }
+    }
+    return toolCalls.length > 0 ? toolCalls : null;
 }
 async function streamOllamaChat(modelId, messages, options, progress, token) {
     const ollamaMessages = convertMessagesToOllama(messages);
@@ -246,6 +254,7 @@ async function streamOllamaChat(modelId, messages, options, progress, token) {
         // Always use 'required' when tools are present — with 'auto', Qwen3.5 may
         // respond with plain text in a multi-turn agent-mode conversation context.
         requestBody.tool_choice = 'required';
+        // Prepend a system message so the model uses JSON tool_calls, not XML text
         const toolNames = runtimeTools.map(t => t.name).join(', ');
         const systemMsg = {
             role: 'system',
@@ -253,10 +262,15 @@ async function streamOllamaChat(modelId, messages, options, progress, token) {
         };
         if (requestBody.messages.length === 0 || requestBody.messages[0].role !== 'system') {
             requestBody.messages = [systemMsg, ...requestBody.messages];
-        } else {
-            requestBody.messages[0] = { ...requestBody.messages[0], content: requestBody.messages[0].content + '\n' + systemMsg.content };
         }
-        console.log(`🔧 Ollama: forwarding ${runtimeTools.length} tool(s) to model`);
+        else {
+            // Append to existing system message
+            requestBody.messages[0] = {
+                ...requestBody.messages[0],
+                content: requestBody.messages[0].content + '\n' + systemMsg.content
+            };
+        }
+        console.log(`🔧 Ollama: forwarding ${runtimeTools.length} tool(s) to model (non-streaming, mode=${requestBody.tool_choice})`);
     }
     try {
         const response = await fetch(`${OLLAMA_ENDPOINT}/chat`, {
@@ -270,18 +284,27 @@ async function streamOllamaChat(modelId, messages, options, progress, token) {
         if (!hasTools) {
             // ── Streaming mode (no tools) ──────────────────────────────────────
             const reader = response.body?.getReader();
-            if (!reader) { throw new Error('No response body'); }
+            if (!reader) {
+                throw new Error('No response body');
+            }
             const decoder = new TextDecoder();
             let buffer = '';
             while (true) {
-                if (token.isCancellationRequested) { reader.cancel(); break; }
+                if (token.isCancellationRequested) {
+                    reader.cancel();
+                    break;
+                }
                 const { done, value } = await reader.read();
-                if (done) { break; }
+                if (done) {
+                    break;
+                }
                 buffer += decoder.decode(value, { stream: true });
                 const lines = buffer.split('\n');
                 for (let i = 0; i < lines.length - 1; i++) {
                     const line = lines[i].trim();
-                    if (!line) { continue; }
+                    if (!line) {
+                        continue;
+                    }
                     try {
                         const chunk = JSON.parse(line);
                         if (chunk.message?.content) {
@@ -304,6 +327,7 @@ async function streamOllamaChat(modelId, messages, options, progress, token) {
         }
         else {
             // ── Non-streaming mode (tools present) ────────────────────────────
+            // Read the entire response body as a single JSON object.
             const text = await response.text();
             let parsed;
             try {
@@ -314,25 +338,26 @@ async function streamOllamaChat(modelId, messages, options, progress, token) {
             }
             const msg = parsed.message;
             if (!msg) {
-                console.warn(`[Ollama] no message in response!`);
                 return;
             }
-            // Prefer JSON tool_calls; fall back to XML-style tool invocations in content
+            // Prefer JSON tool_calls; fall back to XML-style tool invocations found in content
             const toolCallsToReport = (msg.tool_calls && msg.tool_calls.length > 0)
                 ? msg.tool_calls
                 : (msg.content ? parseXmlToolCalls(msg.content) : null);
             if (toolCallsToReport && toolCallsToReport.length > 0) {
                 if (!msg.tool_calls || msg.tool_calls.length === 0) {
-                    console.warn(`⚠️ [Ollama] XML tool invocation in content; parsed ${toolCallsToReport.length} call(s) as fallback`);
+                    console.warn(`⚠️ Ollama: XML tool invocation in content; parsed ${toolCallsToReport.length} call(s) as fallback`);
                 }
                 for (const toolCall of toolCallsToReport) {
                     const callId = toolCall.id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
                     const args = parseToolArguments(toolCall.function.arguments);
+                    console.log(`🔧 Ollama tool call: ${toolCall.function.name}`, args);
                     progress.report(new vscode.LanguageModelToolCallPart(callId, toolCall.function.name, args));
                 }
-            } else {
-                // Model chose not to call tools — surface the text response
-                console.warn(`[Ollama] no tool_calls in response — model responded with text only`);
+            }
+            else {
+                // Model chose not to call a tool — surface its text response
+                console.warn('⚠️ Ollama: no tool_calls returned — model responded with text only');
                 if (msg.content) {
                     progress.report(new vscode.LanguageModelTextPart(msg.content));
                 }
