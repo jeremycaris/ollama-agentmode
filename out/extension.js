@@ -40,10 +40,13 @@ const OLLAMA_ENDPOINT = 'http://localhost:11434/api';
 const CHECK_INTERVAL = 10000;
 let modelCache = new Map();
 let isCheckingModels = false;
+let modelChangeEmitter = new vscode.EventEmitter();
+let knownModelIds = new Set();
 function activate(context) {
     console.log('🚀 Ollama Agent Mode Enabler is activating...');
     // Register the Ollama language model provider
     const provider = vscode.lm.registerLanguageModelChatProvider('localollama', {
+        onDidChangeLanguageModelChatInformation: modelChangeEmitter.event,
         async provideLanguageModelChatInformation() {
             try {
                 return await getAvailableModels();
@@ -64,12 +67,15 @@ function activate(context) {
         }
     });
     context.subscriptions.push(provider);
+    context.subscriptions.push(modelChangeEmitter);
     // Start periodic model checking
     startModelChecker(context);
     // Register command to manually refresh models
     context.subscriptions.push(vscode.commands.registerCommand('ollama-agentmode.refreshModels', async () => {
         modelCache.clear();
         const models = await getAvailableModels();
+        knownModelIds = new Set(models.map(m => m.id));
+        modelChangeEmitter.fire();
         vscode.window.showInformationMessage(`Ollama: Found ${models.length} model(s)`);
     }));
     vscode.window.showInformationMessage('✅ Ollama Agent Mode Enabler activated');
@@ -375,8 +381,17 @@ function startModelChecker(context) {
             return;
         isCheckingModels = true;
         try {
-            // Periodically refresh models
-            await getAvailableModels();
+            // Periodically refresh models and detect changes
+            const freshModels = await getAvailableModels();
+            const freshIds = new Set(freshModels.map(m => m.id));
+            const changed = freshIds.size !== knownModelIds.size ||
+                [...freshIds].some(id => !knownModelIds.has(id)) ||
+                [...knownModelIds].some(id => !freshIds.has(id));
+            if (changed) {
+                knownModelIds = freshIds;
+                modelChangeEmitter.fire();
+                console.log('🔔 Ollama: model list changed, notified VS Code');
+            }
         }
         finally {
             isCheckingModels = false;
